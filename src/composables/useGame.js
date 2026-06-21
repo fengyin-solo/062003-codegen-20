@@ -10,6 +10,10 @@ import {
   calcProfit,
   calcTraineeScore,
   getRelationship,
+  toggleDiaryPin,
+  getTraineeDiaries,
+  getRecentDiaries,
+  getDiaryMoodStats,
 } from '../utils/gameLogic'
 import { saveToSlot } from '../utils/storage'
 
@@ -112,6 +116,12 @@ export function useGame() {
     return getRelationship(state.value.relationships, idA, idB)
   }
 
+  function handleToggleDiaryPin(diaryId) {
+    if (!state.value) return
+    state.value = toggleDiaryPin(state.value, diaryId)
+    autoSave()
+  }
+
   return {
     state,
     currentSlot,
@@ -134,5 +144,9 @@ export function useGame() {
     getRatingResults: () => (state.value ? getRatingResults(state.value) : []),
     calcTraineeScore,
     autoSave,
+    toggleDiaryPin: handleToggleDiaryPin,
+    getTraineeDiaries: (traineeId) => (state.value ? getTraineeDiaries(state.value, traineeId) : []),
+    getRecentDiaries: (limit) => (state.value ? getRecentDiaries(state.value, limit) : []),
+    getDiaryMoodStats: (traineeId) => (state.value ? getDiaryMoodStats(state.value, traineeId) : {}),
   }
 }

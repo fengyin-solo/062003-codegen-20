@@ -20,6 +20,7 @@ export function createInitialGameState() {
     relationships: initRelationships(trainees),
     schedule: {},
     logs: [{ day: 1, text: '事务所成立！五位练习生已就位，三年征途正式开始。' }],
+    diaries: [],
     pendingEvent: null,
     pendingRating: false,
     gameStatus: 'playing',
@@ -44,6 +45,8 @@ function createTrainee(name, index) {
     poachResist: randInt(40, 70),
     fans: 0,
     singlesReleased: 0,
+    mood: 'calm',
+    moodHistory: [{ day: 1, mood: 'calm' }],
   }
 }
 
@@ -119,6 +122,194 @@ function applyRange(val, range, mult = 1) {
   return val + randInt(Math.round(range[0] * mult), Math.round(range[1] * mult))
 }
 
+function determineMood(trainee, context = {}) {
+  const { statGain = 0, hasSynergy = false, hasCompetition = false, avgRelation = 0 } = context
+  const moods = CFG.diary.moods
+
+  const candidates = []
+  for (const [key, mood] of Object.entries(moods)) {
+    const t = mood.threshold
+    let match = true
+
+    if (t.stressMax !== undefined && trainee.stress > t.stressMax) match = false
+    if (t.stressMin !== undefined && trainee.stress < t.stressMin) match = false
+    if (t.fatigueMax !== undefined && trainee.fatigue > t.fatigueMax) match = false
+    if (t.fatigueMin !== undefined && trainee.fatigue < t.fatigueMin) match = false
+    if (t.statGainMin !== undefined && statGain < t.statGainMin) match = false
+    if (t.statGainMax !== undefined && statGain > t.statGainMax) match = false
+    if (t.synergy !== undefined && hasSynergy !== t.synergy) match = false
+    if (t.competition !== undefined && hasCompetition !== t.competition) match = false
+    if (t.relationMin !== undefined && avgRelation < t.relationMin) match = false
+    if (t.relationMax !== undefined && avgRelation > t.relationMax) match = false
+
+    if (match) candidates.push(key)
+  }
+
+  if (candidates.length === 0) return 'calm'
+  return pickRandom(candidates)
+}
+
+function generateDiaryEntry(trainee, day, context = {}) {
+  const { activity, eventType, relationChange, partnerName, statGain = 0 } = context
+  const templates = CFG.diary.templates
+
+  let pool = []
+  let diaryType = 'training'
+
+  if (eventType) {
+    diaryType = 'event'
+    pool = templates.event.filter((t) => t.type === eventType)
+  } else if (relationChange) {
+    diaryType = 'relationship'
+    pool = templates.relationship.filter((t) => t.type === relationChange)
+  } else if (activity) {
+    diaryType = 'training'
+    pool = templates.training.filter((t) => t.activity === activity && t.mood === trainee.mood)
+    if (pool.length === 0) {
+      pool = templates.training.filter((t) => t.activity === activity)
+    }
+  }
+
+  if (pool.length === 0) {
+    pool = templates.emotion
+    diaryType = 'emotion'
+  }
+
+  const template = pickRandom(pool)
+  let text = template.text
+  if (partnerName) {
+    text = text.replace(/{partner}/g, partnerName)
+  }
+
+  return {
+    id: `d_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    traineeId: trainee.id,
+    traineeName: trainee.name,
+    day,
+    mood: trainee.mood,
+    type: diaryType,
+    text,
+    activity: activity || null,
+    eventType: eventType || null,
+    statGain,
+    pinned: false,
+  }
+}
+
+function getAvgRelation(trainee, relationships, trainees) {
+  const others = trainees.filter((t) => t.id !== trainee.id && t.status !== 'left')
+  if (others.length === 0) return 0
+  const rels = others.map((t) => getRelationship(relationships, trainee.id, t.id))
+  return rels.reduce((a, b) => a + b, 0) / rels.length
+}
+
+function generateDailyDiaries(state, dayResults) {
+  const { trainees, relationships } = dayResults
+  const diaries = []
+  const activeTrainees = trainees.filter((t) => t.status !== 'left')
+
+  for (const trainee of activeTrainees) {
+    if (Math.random() > CFG.diary.dailyChance) continue
+
+    const activity = state.schedule[trainee.id]
+    const prevStats = dayResults.prevStats?.[trainee.id] || trainee.stats
+    const statGain = prevStats
+      ? CFG.stats.reduce((sum, key) => sum + (trainee.stats[key] - prevStats[key]), 0)
+      : 0
+
+    const partners = (dayResults.activityGroups?.[activity] || [])
+      .filter((id) => id !== trainee.id)
+      .map((id) => trainees.find((t) => t.id === id))
+      .filter(Boolean)
+
+    const hasSynergy = partners.some((p) => {
+      const rel = getRelationship(relationships, trainee.id, p.id)
+      return rel >= CFG.relationships.synergyThreshold
+    })
+
+    const maxStat = (t) => Math.max(...CFG.stats.map((s) => t.stats[s]))
+    const hasCompetition = partners.some((p) => {
+      const gap = Math.abs(maxStat(trainee) - maxStat(p))
+      return gap >= CFG.relationships.statGapCompetition
+    })
+
+    const avgRelation = getAvgRelation(trainee, relationships, trainees)
+
+    const context = {
+      activity,
+      statGain,
+      hasSynergy,
+      hasCompetition,
+      avgRelation,
+    }
+
+    trainee.mood = determineMood(trainee, context)
+    trainee.moodHistory.push({ day: state.day, mood: trainee.mood })
+
+    let diaryContext = { activity, statGain }
+
+    if (partners.length > 0) {
+      const partner = partners[0]
+      const rel = getRelationship(relationships, trainee.id, partner.id)
+
+      if (rel >= CFG.relationships.synergyThreshold) {
+        diaryContext = { relationChange: 'synergy', partnerName: partner.name }
+      } else if (rel >= 40) {
+        diaryContext = { relationChange: 'close', partnerName: partner.name }
+      } else if (rel <= CFG.relationships.competitionThreshold) {
+        diaryContext = { relationChange: 'competition', partnerName: partner.name }
+      } else if (hasCompetition) {
+        diaryContext = { relationChange: 'competition', partnerName: partner.name }
+      }
+    }
+
+    if (avgRelation <= -20) {
+      diaryContext = { relationChange: 'lonely' }
+    }
+
+    const diary = generateDiaryEntry(trainee, state.day, diaryContext)
+    diaries.push(diary)
+
+    if (diaries.length >= CFG.diary.maxPerDay) break
+  }
+
+  return diaries
+}
+
+function createEventDiary(state, eventType, targetTrainee) {
+  const diary = generateDiaryEntry(targetTrainee, state.day, { eventType })
+  return diary
+}
+
+export function getTraineeDiaries(state, traineeId) {
+  if (!state.diaries) return []
+  return state.diaries.filter((d) => d.traineeId === traineeId)
+}
+
+export function getRecentDiaries(state, limit = 20) {
+  if (!state.diaries) return []
+  return [...state.diaries].reverse().slice(0, limit)
+}
+
+export function getDiaryMoodStats(state, traineeId) {
+  const diaries = getTraineeDiaries(state, traineeId)
+  const counts = {}
+  for (const d of diaries) {
+    counts[d.mood] = (counts[d.mood] || 0) + 1
+  }
+  return counts
+}
+
+export function toggleDiaryPin(state, diaryId) {
+  const diaries = state.diaries.map((d) => {
+    if (d.id === diaryId) {
+      return { ...d, pinned: !d.pinned }
+    }
+    return d
+  })
+  return { ...state, diaries }
+}
+
 function getTrainingMultiplier(trainee, partners, relationships) {
   let mult = 1
   if (trainee.fatigue >= CFG.thresholds.fatigueExhausted) mult *= 0.5
@@ -144,6 +335,11 @@ export function processDay(state) {
   const relationships = { ...state.relationships }
   const trainees = state.trainees.map((t) => ({ ...t, stats: { ...t.stats } }))
   const schedule = state.schedule
+
+  const prevStats = {}
+  for (const t of trainees) {
+    prevStats[t.id] = { ...t.stats }
+  }
 
   const activityGroups = {}
   for (const [traineeId, activity] of Object.entries(schedule)) {
@@ -268,12 +464,16 @@ export function processDay(state) {
   const newDay = state.day + 1
   const pendingRating = state.day % CFG.rating.interval === 0
 
+  const diaries = [...state.diaries]
+  const eventDiaries = []
+
   let pendingEvent = null
   if (Math.random() < CFG.events.dailyChance) {
     pendingEvent = generateRandomEvent(trainees, state.day)
     if (pendingEvent.type === 'fan_surge') {
       fans += pendingEvent.fansGain
       logs.push({ day: state.day, text: `【${pendingEvent.label}】粉丝 +${pendingEvent.fansGain}！` })
+      eventDiaries.push(createEventDiary(state, 'fan_surge', pendingEvent.target))
       pendingEvent = null
     } else if (pendingEvent.type === 'inspiration') {
       const target = pendingEvent.target
@@ -283,6 +483,7 @@ export function processDay(state) {
         day: state.day,
         text: `【${pendingEvent.label}】${target.name} 的${CFG.statLabels[stat]} +${pendingEvent.statBoost}！`,
       })
+      eventDiaries.push(createEventDiary(state, 'inspiration', target))
       pendingEvent = null
     } else if (pendingEvent.type === 'negative_news') {
       fans = Math.max(0, fans - pendingEvent.fansLoss)
@@ -295,6 +496,10 @@ export function processDay(state) {
         day: state.day,
         text: `【${pendingEvent.label}】粉丝 -${pendingEvent.fansLoss}，全员压力上升。`,
       })
+      const affectedTrainees = trainees.filter((t) => t.status !== 'left')
+      if (affectedTrainees.length > 0) {
+        eventDiaries.push(createEventDiary(state, 'negative_news', pickRandom(affectedTrainees)))
+      }
       pendingEvent = null
     } else if (pendingEvent.type === 'illness') {
       pendingEvent.target.illnessDays = pendingEvent.duration
@@ -307,9 +512,19 @@ export function processDay(state) {
         day: state.day,
         text: `【${pendingEvent.label}】${pendingEvent.target.name} 需要休养 ${pendingEvent.duration} 天。`,
       })
+      eventDiaries.push(createEventDiary(state, 'illness', pendingEvent.target))
       pendingEvent = null
     }
   }
+
+  const dayResults = {
+    trainees,
+    relationships,
+    prevStats,
+    activityGroups,
+  }
+  const dailyDiaries = generateDailyDiaries(state, dayResults)
+  diaries.push(...dailyDiaries, ...eventDiaries)
 
   const nextState = {
     ...state,
@@ -321,6 +536,7 @@ export function processDay(state) {
     relationships,
     schedule: {},
     logs: [...state.logs, ...logs],
+    diaries,
     pendingEvent,
     pendingRating,
   }
@@ -379,6 +595,7 @@ export function resolvePoachingEvent(state, keepTrainee) {
   if (!event || event.type !== 'poaching') return state
 
   const logs = [...state.logs]
+  const diaries = [...state.diaries]
   const trainees = state.trainees.map((t) => ({ ...t, stats: { ...t.stats } }))
   const target = trainees.find((t) => t.id === event.target.id)
 
@@ -389,12 +606,14 @@ export function resolvePoachingEvent(state, keepTrainee) {
       text: `【挖角危机】你花费 ¥${cost} 成功挽留 ${target.name}！`,
     })
     target.stress = clamp(target.stress + randInt(5, 12), 0, 100)
+    diaries.push(createEventDiary(state, 'poaching', target))
     return {
       ...state,
       money: state.money - cost,
       totalExpenses: state.totalExpenses + cost,
       trainees,
       logs,
+      diaries,
       pendingEvent: null,
     }
   }
@@ -403,16 +622,19 @@ export function resolvePoachingEvent(state, keepTrainee) {
   const resist = target.poachResist / 100
   if (roll > event.successChance * (1 - resist * 0.5)) {
     logs.push({ day: state.day, text: `【挖角危机】${target.name} 决定留在事务所。` })
-    return { ...state, trainees, logs, pendingEvent: null }
+    diaries.push(createEventDiary(state, 'poaching', target))
+    return { ...state, trainees, logs, diaries, pendingEvent: null }
   }
 
   target.status = 'left'
   logs.push({ day: state.day, text: `【挖角危机】${target.name} 被竞争对手挖走，离开了事务所！` })
+  diaries.push(createEventDiary(state, 'poaching', target))
   const result = checkVictory({ ...state, trainees })
   return {
     ...state,
     trainees,
     logs,
+    diaries,
     pendingEvent: null,
     gameStatus: result || state.gameStatus,
   }
@@ -465,9 +687,14 @@ export function debutGroup(state, memberIds, groupName) {
     },
   ]
 
+  const diaries = [...state.diaries]
+  for (const member of members) {
+    diaries.push(createEventDiary(state, 'debut', member))
+  }
+
   return {
     success: true,
-    state: { ...state, trainees, groups, logs, pendingRating: false },
+    state: { ...state, trainees, groups, logs, diaries, pendingRating: false },
   }
 }
 
@@ -527,6 +754,11 @@ export function releaseSingle(state, groupId) {
     },
   ]
 
+  const diaries = [...state.diaries]
+  for (const member of members) {
+    diaries.push(createEventDiary(state, 'single', member))
+  }
+
   return {
     success: true,
     state: {
@@ -538,6 +770,7 @@ export function releaseSingle(state, groupId) {
       groups,
       trainees,
       logs,
+      diaries,
       lastSingleDay: { ...state.lastSingleDay, [groupId]: state.day },
     },
     sales,

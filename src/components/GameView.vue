@@ -44,6 +44,12 @@
           :trainees="state.trainees"
           :relationships="state.relationships"
         />
+        <DiaryPanel
+          :diaries="state.diaries"
+          :trainees="state.trainees"
+          :current-day="state.day"
+          @toggle-pin="onToggleDiaryPin"
+        />
       </aside>
     </div>
 
@@ -87,6 +93,7 @@ import SchedulePanel from './SchedulePanel.vue'
 import DayLog from './DayLog.vue'
 import GroupsPanel from './GroupsPanel.vue'
 import RelationshipPanel from './RelationshipPanel.vue'
+import DiaryPanel from './DiaryPanel.vue'
 import RatingModal from './RatingModal.vue'
 import DebutModal from './DebutModal.vue'
 import EventModal from './EventModal.vue'
@@ -113,6 +120,7 @@ const emit = defineEmits([
   'debut',
   'resolve-poaching',
   'release-single',
+  'toggle-diary-pin',
 ])
 
 const showDebut = ref(false)
@@ -129,6 +137,10 @@ function onDebut(memberIds, groupName) {
       setTimeout(() => { toast.value = '' }, 3000)
     }
   })
+}
+
+function onToggleDiaryPin(diaryId) {
+  emit('toggle-diary-pin', diaryId)
 }
 </script>
 

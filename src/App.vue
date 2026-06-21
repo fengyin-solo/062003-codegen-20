@@ -27,6 +27,7 @@
     @debut="onDebut"
     @resolve-poaching="handlePoaching"
     @release-single="onReleaseSingle"
+    @toggle-diary-pin="toggleDiaryPin"
   />
 </template>
 
@@ -60,6 +61,7 @@ const {
   backToMenu,
   getRatingResults,
   calcTraineeScore,
+  toggleDiaryPin,
 } = useGame()
 
 onMounted(() => {

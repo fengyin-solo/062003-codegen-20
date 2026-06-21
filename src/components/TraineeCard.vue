@@ -1,7 +1,10 @@
 <template>
   <div class="trainee-card card" :class="statusClass">
     <div class="card-top">
-      <h4>{{ trainee.name }}</h4>
+      <div class="name-row">
+        <h4>{{ trainee.name }}</h4>
+        <span v-if="trainee.mood" class="mood" :title="moodLabel">{{ moodIcon }}</span>
+      </div>
       <span class="badge" :class="trainee.status">{{ statusLabel }}</span>
     </div>
 
@@ -60,6 +63,16 @@ const statusClass = computed(() => ({
   left: props.trainee.status === 'left',
   ill: props.trainee.illnessDays > 0,
 }))
+
+const moods = GAME_CONFIG.diary.moods
+
+const moodIcon = computed(() => {
+  return moods[props.trainee.mood]?.icon || '😐'
+})
+
+const moodLabel = computed(() => {
+  return moods[props.trainee.mood]?.label || '平静'
+})
 </script>
 
 <style scoped>
@@ -79,7 +92,18 @@ const statusClass = computed(() => ({
   margin-bottom: 0.75rem;
 }
 
-.card-top h4 { font-size: 1rem; }
+.name-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.name-row h4 { font-size: 1rem; }
+
+.mood {
+  font-size: 1.1rem;
+  cursor: default;
+}
 
 .badge {
   font-size: 0.7rem;
